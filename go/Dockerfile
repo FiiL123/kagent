@@ -29,14 +29,42 @@ RUN --mount=type=cache,target=/root/go/pkg/mod,rw             \
     echo "Building on $BUILDPLATFORM -> linux/$TARGETARCH" && \
     CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -ldflags "$LDFLAGS" -o /app "$BUILD_PACKAGE"
 
-### STAGE 2: final image
-# Use distroless as minimal base image to package the manager binary
-# Refer to https://github.com/GoogleContainerTools/distroless for more details
-FROM gcr.io/distroless/static:nonroot
+### STAGE 2: install srt
+FROM node:18-alpine AS srt-installer
+RUN --mount=type=cache,target=/var/cache/apk,rw \
+    apk add --no-cache git bubblewrap socat ripgrep && \
+    mkdir -p /opt/sandbox-runtime && \
+    git clone https://github.com/anthropic-experimental/sandbox-runtime.git /opt/sandbox-runtime && \
+    cd /opt/sandbox-runtime && \
+    git checkout -q ef4afdef4d711ba21a507d7f7369e305f7d3dbfa && \
+    npm install && \
+    npm run build && \
+    npm prune --omit=dev
+
+# Create srt wrapper script in node_modules/.bin
+RUN mkdir -p /opt/sandbox-runtime/node_modules/.bin && \
+    echo '#!/bin/sh' > /opt/sandbox-runtime/node_modules/.bin/srt && \
+    echo 'exec node /opt/sandbox-runtime/dist/cli.js "$@"' >> /opt/sandbox-runtime/node_modules/.bin/srt && \
+    chmod +x /opt/sandbox-runtime/node_modules/.bin/srt
+
+### STAGE 3: final image
+FROM alpine:latest
 ARG TARGETPLATFORM
 
-WORKDIR /
+# Install runtime dependencies for srt and ca-certificates
+RUN --mount=type=cache,target=/var/cache/apk,rw \
+    apk add --no-cache bubblewrap nodejs npm ca-certificates ripgrep socat bash curl && \
+    addgroup -g 65532 nonroot && \
+    adduser -D -u 65532 -G nonroot nonroot
+
+# Copy the Go binary
 COPY --from=builder /app /app
+
+# Copy srt installation
+COPY --from=srt-installer /opt/sandbox-runtime /opt/sandbox-runtime
+
+ENV PATH="/opt/sandbox-runtime/node_modules/.bin:$PATH"
+
 USER 65532:65532
 ARG VERSION
 

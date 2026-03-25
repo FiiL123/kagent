@@ -163,6 +163,7 @@ type AgentOptions struct {
 	Runtime        *v1alpha2.DeclarativeRuntime
 	Memory         *v1alpha2.MemorySpec
 	PromptTemplate *v1alpha2.PromptTemplateSpec
+	SandboxNetwork *v1alpha2.SandboxNetworkConfig
 }
 
 // setupAgentWithOptions creates and returns an agent resource with custom options
@@ -449,6 +450,10 @@ func generateAgent(modelConfigName string, tools []*v1alpha2.Tool, opts AgentOpt
 		agent.Spec.Declarative.PromptTemplate = opts.PromptTemplate
 	}
 
+	if opts.SandboxNetwork != nil {
+		agent.Spec.SandboxNetwork = opts.SandboxNetwork
+	}
+
 	return agent
 }
 
@@ -673,15 +678,15 @@ func generateOpenAIAgent(baseURL string) *v1alpha2.Agent {
 func generateLangGraphAgent(baseURL string) *v1alpha2.Agent {
 	return &v1alpha2.Agent{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "langgraph-kebab-test",
+			Name:      "currency-converter-test",
 			Namespace: "kagent",
 		},
 		Spec: v1alpha2.AgentSpec{
-			Description: "LangGraph kebab sample for E2E testing",
+			Description: "A currency converter LangGraph agent that can convert currencies",
 			Type:        v1alpha2.AgentType_BYO,
 			BYO: &v1alpha2.BYOAgentSpec{
 				Deployment: &v1alpha2.ByoDeploymentSpec{
-					Image: "localhost:5001/langgraph-kebab:latest",
+					Image: "localhost:5001/langgraph-currency:latest",
 					SharedDeploymentSpec: v1alpha2.SharedDeploymentSpec{
 						Env: []corev1.EnvVar{
 							{
@@ -813,7 +818,8 @@ func TestE2EInvokeLangGraphAgent(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_ = cli.Delete(t.Context(), &v1alpha2.Agent{ObjectMeta: metav1.ObjectMeta{Name: "langgraph-kebab-test", Namespace: "kagent"}})
+	// Clean up any leftover agent from a previous failed run
+	_ = cli.Delete(t.Context(), &v1alpha2.Agent{ObjectMeta: metav1.ObjectMeta{Name: "currency-converter-test", Namespace: "kagent"}})
 
 	// Generate the LangGraph agent and inject the mock server's URL
 	agent := generateLangGraphAgent(baseURL)
@@ -849,11 +855,11 @@ func TestE2EInvokeLangGraphAgent(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("sync_invocation", func(t *testing.T) {
-		runSyncTest(t, a2aClient, "make me a kebab", "kebab is ready", nil)
+		runSyncTest(t, a2aClient, "What is the exchange rate from USD to EUR?", "0.92", nil)
 	})
 
 	t.Run("streaming_invocation", func(t *testing.T) {
-		runStreamingTest(t, a2aClient, "make me a kebab", "kebab is ready")
+		runStreamingTest(t, a2aClient, "What is the exchange rate from USD to EUR?", "0.92")
 	})
 }
 
@@ -1294,6 +1300,106 @@ You are {{.AgentName}}, operating in {{.AgentNamespace}}.
 		// Verify the agent still responds correctly
 		runSyncTest(t, a2aClient, "List all nodes in the cluster", "kagent-control-plane", nil)
 	})
+}
+
+func TestE2ESandboxNetworkConfig(t *testing.T) {
+	// Setup mock server
+	baseURL, stopServer := setupMockServer(t, "mocks/invoke_sandbox_network.json")
+	defer stopServer()
+
+	// Setup Kubernetes client
+	cli := setupK8sClient(t, false)
+
+	goRuntime := v1alpha2.DeclarativeRuntime_Go
+
+	// Setup specific resources
+	modelCfg := setupModelConfig(t, cli, baseURL)
+	agent := setupAgentWithOptions(t, cli, modelCfg.Name, nil, AgentOptions{
+		Runtime: &goRuntime,
+		Skills: &v1alpha2.SkillForAgent{
+			InsecureSkipVerify: true,
+			Refs:               []string{"kind-registry:5000/kebab-maker:latest"},
+		},
+		SandboxNetwork: &v1alpha2.SandboxNetworkConfig{
+			AllowedDomains: []string{"api.example.com", "*.example.com"},
+		},
+	})
+
+	// Setup A2A client
+	a2aClient := setupA2AClient(t, agent)
+
+	// The mock LLM tells the agent to read /config/srt-settings.json via bash.
+	// This verifies the entire pipeline: CRD sandboxNetwork field → Go translator
+	// generates srt-settings.json in the config Secret → file is mounted in the pod.
+	// The mock matches on "api.example.com" in the tool response, confirming the
+	// settings file contains the configured domain.
+	runSyncTest(t, a2aClient, "check sandbox network config", "Configuration verified successfully", nil)
+}
+
+// TestE2ESandboxNetworkBlocked tests that requests to non-allowed domains are blocked.
+func TestE2ESandboxNetworkBlocked(t *testing.T) {
+	// Setup mock server
+	baseURL, stopServer := setupMockServer(t, "mocks/invoke_sandbox_network_blocked.json")
+	defer stopServer()
+
+	// Setup Kubernetes client
+	cli := setupK8sClient(t, false)
+
+	goRuntime := v1alpha2.DeclarativeRuntime_Go
+
+	// Setup specific resources with restrictive network policy
+	modelCfg := setupModelConfig(t, cli, baseURL)
+	agent := setupAgentWithOptions(t, cli, modelCfg.Name, nil, AgentOptions{
+		Runtime: &goRuntime,
+		Skills: &v1alpha2.SkillForAgent{
+			InsecureSkipVerify: true,
+			Refs:               []string{"kind-registry:5000/kebab-maker:latest"},
+		},
+		SandboxNetwork: &v1alpha2.SandboxNetworkConfig{
+			AllowedDomains: []string{"api.example.com", "*.example.com"},
+		},
+	})
+
+	// Setup A2A client
+	a2aClient := setupA2AClient(t, agent)
+
+	// The mock LLM tells the agent to try to fetch kagent.dev via curl.
+	// This verifies that the sandbox correctly blocks requests to domains not in the allowed list.
+	// The mock matches on "Request completed" (the fallback after curl fails due to srt blocking).
+	runSyncTest(t, a2aClient, "try to fetch kagent.dev", "Network restriction verified successfully", nil)
+}
+
+// TestE2ESandboxNetworkAllowed tests that requests to allowed domains succeed.
+func TestE2ESandboxNetworkAllowed(t *testing.T) {
+	// Setup mock server
+	baseURL, stopServer := setupMockServer(t, "mocks/invoke_sandbox_network_allowed.json")
+	defer stopServer()
+
+	// Setup Kubernetes client
+	cli := setupK8sClient(t, false)
+
+	goRuntime := v1alpha2.DeclarativeRuntime_Go
+
+	// Setup specific resources with kagent.dev in allowed domains
+	modelCfg := setupModelConfig(t, cli, baseURL)
+	agent := setupAgentWithOptions(t, cli, modelCfg.Name, nil, AgentOptions{
+		Runtime: &goRuntime,
+		Skills: &v1alpha2.SkillForAgent{
+			InsecureSkipVerify: true,
+			Refs:               []string{"kind-registry:5000/kebab-maker:latest"},
+		},
+		SandboxNetwork: &v1alpha2.SandboxNetworkConfig{
+			AllowedDomains: []string{"kagent.dev", "api.example.com", "*.example.com"},
+		},
+	})
+
+	// Setup A2A client
+	a2aClient := setupA2AClient(t, agent)
+
+	// The mock LLM tells the agent to fetch kagent.dev via curl.
+	// This verifies that the sandbox allows requests to domains in the allowed list.
+	// The mock matches on "<!DOCTYPE" (the start of HTML response from kagent.dev).
+	runSyncTest(t, a2aClient, "fetch kagent.dev", "Network restriction verified successfully", nil)
 }
 
 func TestE2EIAgentRunsCode(t *testing.T) {

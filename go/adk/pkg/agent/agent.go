@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 	"github.com/kagent-dev/kagent/go/adk/pkg/mcp"
 	"github.com/kagent-dev/kagent/go/adk/pkg/models"
+	"github.com/kagent-dev/kagent/go/adk/pkg/skills/tools"
 	"github.com/kagent-dev/kagent/go/api/adk"
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/agent/llmagent"
@@ -51,6 +52,13 @@ func CreateGoogleADKAgent(ctx context.Context, agentConfig *adk.AgentConfig, age
 		}
 	}
 	memoryTools = append(memoryTools, extraTools...)
+
+	// Add skills tools if KAGENT_SKILLS_FOLDER is set
+	skillsDir := os.Getenv("KAGENT_SKILLS_FOLDER")
+	if skillsDir != "" {
+		log.Info("Skills folder detected, adding skills tools", "skillsDir", skillsDir)
+		tools.AddSkillsToolsToAgent(skillsDir, &memoryTools)
+	}
 
 	if agentConfig.Model == nil {
 		return nil, fmt.Errorf("model configuration is required")

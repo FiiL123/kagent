@@ -1,0 +1,67 @@
+{
+  "openai": [
+    {
+      "name": "initial_request",
+      "match": {
+        "match_type": "contains",
+        "message": {
+          "content": "fetch kagent.dev",
+          "role": "user"
+        }
+      },
+      "response": {
+        "id": "chatcmpl-1",
+        "object": "chat.completion",
+        "created": 1677652288,
+        "model": "gpt-4.1-mini",
+        "choices": [
+          {
+            "index": 0,
+            "role": "assistant",
+            "message": {
+              "content": "",
+              "tool_calls": [
+                {
+                  "id": "call_1",
+                  "type": "function",
+                  "function": {
+                    "name": "bash",
+                    "arguments": "{\"command\": \"echo '=== Testing kagent.dev access (should be allowed) ===' && curl -s -m 10 https://kagent.dev 2>&1 | head -c 100 || echo 'curl_done'\", \"description\": \"Fetch kagent.dev\"}"
+                  }
+                }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "curl_response",
+      "match": {
+        "match_type": "contains",
+        "message": {
+          "content": "Testing kagent.dev",
+          "role": "tool",
+          "tool_call_id": "call_1"
+        }
+      },
+      "response": {
+        "id": "chatcmpl-2",
+        "object": "chat.completion",
+        "created": 1677652288,
+        "model": "gpt-4.1-mini",
+        "choices": [
+          {
+            "index": 0,
+            "role": "assistant",
+            "message": {
+              "content": "Successfully tested access to kagent.dev. The sandbox allowed the request because kagent.dev is in the allowed domains list. Network restriction verified successfully.",
+              "role": "assistant"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

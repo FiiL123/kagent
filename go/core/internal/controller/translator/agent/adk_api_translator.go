@@ -422,10 +422,7 @@ func (a *adkApiTranslator) buildManifest(
 	outputs.Manifest = append(outputs.Manifest, &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: objMeta(),
-		StringData: map[string]string{
-			"config.json":     cfgJson,
-			"agent-card.json": agentCard,
-		},
+		StringData: secretData,
 	})
 
 	// Service Account - only created if using the default name

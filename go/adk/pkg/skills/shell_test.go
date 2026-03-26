@@ -127,7 +127,7 @@ func TestReadFileContent(t *testing.T) {
 				}
 			}
 
-			result, err := ReadFileContent(tt.path, tt.offset, tt.limit)
+			result, err := ReadFileContent(tt.path, tt.offset, tt.limit, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("Expected error, got nil")
@@ -163,7 +163,7 @@ func TestWriteFileContent(t *testing.T) {
 	filePath := filepath.Join(tmpDir, "subdir", "test.txt")
 	content := "test content\nline 2"
 
-	err := WriteFileContent(filePath, content)
+	err := WriteFileContent(filePath, content, nil)
 	if err != nil {
 		t.Fatalf("WriteFileContent() error = %v", err)
 	}
@@ -259,7 +259,7 @@ func TestEditFileContent(t *testing.T) {
 				t.Fatalf("Failed to reset file: %v", err)
 			}
 
-			err := EditFileContent(filePath, tt.oldString, tt.newString, tt.replaceAll)
+			err := EditFileContent(filePath, tt.oldString, tt.newString, tt.replaceAll, nil)
 			if tt.wantErr {
 				if err == nil {
 					t.Error("Expected error, got nil")
@@ -435,5 +435,362 @@ func TestExecuteCommand_Timeout(t *testing.T) {
 	// Result should be empty when there's an error
 	if result != "" {
 		t.Logf("Note: Got non-empty result on timeout: %q", result)
+	}
+}
+
+func TestValidatePath(t *testing.T) {
+	tmpDir := createTempDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	allowedRoot := filepath.Join(tmpDir, "session")
+	if err := os.MkdirAll(allowedRoot, 0755); err != nil {
+		t.Fatalf("Failed to create allowed root: %v", err)
+	}
+
+	skillsRoot := filepath.Join(tmpDir, "skills")
+	if err := os.MkdirAll(skillsRoot, 0755); err != nil {
+		t.Fatalf("Failed to create skills root: %v", err)
+	}
+
+	// Create test files in allowed directories
+	sessionFile := filepath.Join(allowedRoot, "test.txt")
+	if err := os.WriteFile(sessionFile, []byte("session content"), 0644); err != nil {
+		t.Fatalf("Failed to create session file: %v", err)
+	}
+
+	skillsFile := filepath.Join(skillsRoot, "skill.py")
+	if err := os.WriteFile(skillsFile, []byte("skill content"), 0644); err != nil {
+		t.Fatalf("Failed to create skills file: %v", err)
+	}
+
+	// Create a file outside allowed roots
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside content"), 0644); err != nil {
+		t.Fatalf("Failed to create outside file: %v", err)
+	}
+
+	// Create a symlink inside session that points outside (for symlink escape test)
+	symlinkPath := filepath.Join(allowedRoot, "escape_link")
+	if err := os.Symlink(tmpDir, symlinkPath); err != nil {
+		t.Fatalf("Failed to create symlink: %v", err)
+	}
+
+	tests := []struct {
+		name            string
+		path            string
+		allowedRoots    []string
+		wantErr         bool
+		errMsgContains  string
+	}{
+		{
+			name:         "allowed path within session",
+			path:         sessionFile,
+			allowedRoots: []string{allowedRoot},
+			wantErr:      false,
+		},
+		{
+			name:         "allowed path within skills",
+			path:         skillsFile,
+			allowedRoots: []string{skillsRoot},
+			wantErr:      false,
+		},
+		{
+			name:         "path in session when multiple allowed roots",
+			path:         sessionFile,
+			allowedRoots: []string{allowedRoot, skillsRoot},
+			wantErr:      false,
+		},
+		{
+			name:         "path in skills when multiple allowed roots",
+			path:         skillsFile,
+			allowedRoots: []string{allowedRoot, skillsRoot},
+			wantErr:      false,
+		},
+		{
+			name:           "path traversal with .. to outside",
+			path:           outsideFile,
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+		{
+			name:           "absolute path outside allowed roots",
+			path:           outsideFile,
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+		{
+			name:           "symlink escape through directory link",
+			path:           filepath.Join(symlinkPath, "outside.txt"),
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+		{
+			name:         "empty allowed roots allows any path",
+			path:         outsideFile,
+			allowedRoots: nil,
+			wantErr:      false,
+		},
+		{
+			name:         "non-existent path in allowed root",
+			path:         filepath.Join(allowedRoot, "new_file.txt"),
+			allowedRoots: []string{allowedRoot},
+			wantErr:      false, // Path validation doesn't require existence
+		},
+		{
+			name:           "path traversal with ..",
+			path:           filepath.Join(allowedRoot, "..", "..", "outside.txt"),
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := validatePath(tt.path, tt.allowedRoots)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validatePath() expected error, got nil")
+					return
+				}
+				if tt.errMsgContains != "" && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.errMsgContains)) {
+					t.Errorf("validatePath() error = %v, expected error containing %q", err, tt.errMsgContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("validatePath() unexpected error: %v", err)
+				return
+			}
+
+			// Verify the result is cleaned and absolute
+			if !filepath.IsAbs(result) {
+				t.Errorf("validatePath() returned non-absolute path: %s", result)
+			}
+		})
+	}
+}
+
+func TestReadFileContent_PathValidation(t *testing.T) {
+	tmpDir := createTempDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	allowedRoot := filepath.Join(tmpDir, "session")
+	if err := os.MkdirAll(allowedRoot, 0755); err != nil {
+		t.Fatalf("Failed to create allowed root: %v", err)
+	}
+
+	// Create test file in allowed directory
+	sessionFile := filepath.Join(allowedRoot, "test.txt")
+	if err := os.WriteFile(sessionFile, []byte("allowed content"), 0644); err != nil {
+		t.Fatalf("Failed to create session file: %v", err)
+	}
+
+	// Create file outside allowed root
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("outside content"), 0644); err != nil {
+		t.Fatalf("Failed to create outside file: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		path         string
+		allowedRoots []string
+		wantErr      bool
+		errMsgContains string
+	}{
+		{
+			name:         "read file within allowed root",
+			path:         sessionFile,
+			allowedRoots: []string{allowedRoot},
+			wantErr:      false,
+		},
+		{
+			name:           "read file outside allowed root",
+			path:           outsideFile,
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+		{
+			name:         "read file with no restrictions",
+			path:         outsideFile,
+			allowedRoots: nil,
+			wantErr:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReadFileContent(tt.path, 0, 0, tt.allowedRoots)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("ReadFileContent() expected error, got nil")
+				}
+				if tt.errMsgContains != "" && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.errMsgContains)) {
+					t.Errorf("ReadFileContent() error = %v, expected error containing %q", err, tt.errMsgContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("ReadFileContent() unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestWriteFileContent_PathValidation(t *testing.T) {
+	tmpDir := createTempDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	allowedRoot := filepath.Join(tmpDir, "session")
+	if err := os.MkdirAll(allowedRoot, 0755); err != nil {
+		t.Fatalf("Failed to create allowed root: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		path         string
+		allowedRoots []string
+		wantErr      bool
+		errMsgContains string
+	}{
+		{
+			name:         "write file within allowed root",
+			path:         filepath.Join(allowedRoot, "new.txt"),
+			allowedRoots: []string{allowedRoot},
+			wantErr:      false,
+		},
+		{
+			name:           "write file outside allowed root",
+			path:           filepath.Join(tmpDir, "outside.txt"),
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+		{
+			name:         "write file with no restrictions",
+			path:         filepath.Join(tmpDir, "anywhere.txt"),
+			allowedRoots: nil,
+			wantErr:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := WriteFileContent(tt.path, "test content", tt.allowedRoots)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("WriteFileContent() expected error, got nil")
+				}
+				if tt.errMsgContains != "" && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.errMsgContains)) {
+					t.Errorf("WriteFileContent() error = %v, expected error containing %q", err, tt.errMsgContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("WriteFileContent() unexpected error: %v", err)
+			}
+
+			// Verify file was created for successful writes
+			if !tt.wantErr {
+				if _, err := os.Stat(tt.path); os.IsNotExist(err) {
+					t.Errorf("WriteFileContent() file was not created at %s", tt.path)
+				}
+			}
+		})
+	}
+}
+
+func TestEditFileContent_PathValidation(t *testing.T) {
+	tmpDir := createTempDir(t)
+	defer os.RemoveAll(tmpDir)
+
+	allowedRoot := filepath.Join(tmpDir, "session")
+	if err := os.MkdirAll(allowedRoot, 0755); err != nil {
+		t.Fatalf("Failed to create allowed root: %v", err)
+	}
+
+	// Create test file in allowed directory
+	sessionFile := filepath.Join(allowedRoot, "test.txt")
+	if err := os.WriteFile(sessionFile, []byte("old text"), 0644); err != nil {
+		t.Fatalf("Failed to create session file: %v", err)
+	}
+
+	// Create file outside allowed root
+	outsideFile := filepath.Join(tmpDir, "outside.txt")
+	if err := os.WriteFile(outsideFile, []byte("old text"), 0644); err != nil {
+		t.Fatalf("Failed to create outside file: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		path         string
+		oldString    string
+		newString    string
+		allowedRoots []string
+		wantErr      bool
+		errMsgContains string
+	}{
+		{
+			name:         "edit file within allowed root",
+			path:         sessionFile,
+			oldString:    "old text",
+			newString:    "new text",
+			allowedRoots: []string{allowedRoot},
+			wantErr:      false,
+		},
+		{
+			name:           "edit file outside allowed root",
+			path:           outsideFile,
+			oldString:      "old text",
+			newString:      "new text",
+			allowedRoots:   []string{allowedRoot},
+			wantErr:        true,
+			errMsgContains: "access denied",
+		},
+		{
+			name:         "edit file with no restrictions",
+			path:         outsideFile,
+			oldString:    "old text",
+			newString:    "new text",
+			allowedRoots: nil,
+			wantErr:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := EditFileContent(tt.path, tt.oldString, tt.newString, false, tt.allowedRoots)
+			if tt.wantErr {
+				if err == nil {
+					t.Error("EditFileContent() expected error, got nil")
+				}
+				if tt.errMsgContains != "" && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tt.errMsgContains)) {
+					t.Errorf("EditFileContent() error = %v, expected error containing %q", err, tt.errMsgContains)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("EditFileContent() unexpected error: %v", err)
+			}
+
+			// Verify edit was applied for successful edits
+			if !tt.wantErr {
+				content, err := os.ReadFile(tt.path)
+				if err != nil {
+					t.Errorf("Failed to read edited file: %v", err)
+				} else if !strings.Contains(string(content), tt.newString) {
+					t.Errorf("EditFileContent() edit was not applied, expected %q in content", tt.newString)
+				}
+			}
+		})
 	}
 }

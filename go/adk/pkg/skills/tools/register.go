@@ -21,7 +21,7 @@ func AddSkillsToolsToAgent(skillsDir string, extraTools *[]tool.Tool) {
 		NewSkillsTool(skillsDir),
 		NewBashTool(skillsDir),
 		NewReadFileTool(skillsDir),
-		NewWriteFileTool(),
-		NewEditFileTool(),
+		NewWriteFileTool(skillsDir),
+		NewEditFileTool(skillsDir),
 	)
 }

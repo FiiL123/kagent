@@ -55,22 +55,41 @@ func (t *BashTool) Execute(ctx context.Context, command string, sessionID string
 	return ExecuteCommand(ctx, command, sessionPath)
 }
 
-// FileTools provides file operation tools
-type FileTools struct{}
+// FileTools provides file operation tools with path boundary enforcement.
+// SessionPath is the working directory for the current session.
+// SkillsDirectory is the read-only skills directory (only for read operations).
+type FileTools struct {
+	SessionPath     string
+	SkillsDirectory string
+}
 
-// ReadFile reads a file with line numbers
+// NewFileTools creates a new FileTools with path boundary enforcement.
+func NewFileTools(sessionPath, skillsDirectory string) *FileTools {
+	return &FileTools{
+		SessionPath:     sessionPath,
+		SkillsDirectory: skillsDirectory,
+	}
+}
+
+// ReadFile reads a file with line numbers.
+// Allows access to both session path and skills directory (read-only access to skills).
 func (ft *FileTools) ReadFile(path string, offset, limit int) (string, error) {
-	return ReadFileContent(path, offset, limit)
+	allowedRoots := []string{ft.SessionPath, ft.SkillsDirectory}
+	return ReadFileContent(path, offset, limit, allowedRoots)
 }
 
-// WriteFile writes content to a file
+// WriteFile writes content to a file.
+// Only allows access to session path (no write access to skills directory).
 func (ft *FileTools) WriteFile(path string, content string) error {
-	return WriteFileContent(path, content)
+	allowedRoots := []string{ft.SessionPath}
+	return WriteFileContent(path, content, allowedRoots)
 }
 
-// EditFile performs an exact string replacement in a file
+// EditFile performs an exact string replacement in a file.
+// Only allows access to session path (no write access to skills directory).
 func (ft *FileTools) EditFile(path string, oldString, newString string, replaceAll bool) error {
-	return EditFileContent(path, oldString, newString, replaceAll)
+	allowedRoots := []string{ft.SessionPath}
+	return EditFileContent(path, oldString, newString, replaceAll, allowedRoots)
 }
 
 // InitializeSessionPath initializes a session's working directory with skills symlink

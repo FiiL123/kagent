@@ -274,7 +274,7 @@ func TestSkillExecution_Integration(t *testing.T) {
 
 	// 3. Verify the output by reading the generated file
 	outputJSONPath := filepath.Join(sessionDir, "outputs", "result.json")
-	rawOutput, err := ReadFileContent(outputJSONPath, 0, 0)
+	rawOutput, err := ReadFileContent(outputJSONPath, 0, 0, nil)
 	if err != nil {
 		t.Fatalf("Failed to read output file: %v", err)
 	}

@@ -12,9 +12,66 @@ import (
 	"time"
 )
 
+// validatePath resolves the path and ensures it is within at least one allowed root directory.
+// This prevents path traversal attacks and ensures file operations stay within intended boundaries.
+// If allowedRoots is empty, no restriction is applied (for backward compatibility).
+func validatePath(filePath string, allowedRoots []string) (string, error) {
+	// Resolve the path (follows symlinks like Python's Path.resolve())
+	resolved, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		// If path doesn't exist yet, clean it instead
+		resolved = filepath.Clean(filePath)
+	}
+
+	// If no allowed roots specified, no restriction (backward compatibility)
+	if len(allowedRoots) == 0 {
+		return resolved, nil
+	}
+
+	// Check if resolved path is within any allowed root
+	for _, root := range allowedRoots {
+		// Resolve the root to handle any symlinks in the root path
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			// If root doesn't exist yet, clean it
+			resolvedRoot = filepath.Clean(root)
+		}
+
+		// Ensure root ends with separator for proper prefix matching
+		if !strings.HasSuffix(resolvedRoot, string(filepath.Separator)) {
+			resolvedRoot += string(filepath.Separator)
+		}
+
+		// Check if resolved path starts with the resolved root
+		if strings.HasPrefix(resolved, resolvedRoot) {
+			return resolved, nil
+		}
+
+		// Also check exact match (for the root directory itself)
+		if resolved == filepath.Clean(root) {
+			return resolved, nil
+		}
+	}
+
+	// Build error message with list of allowed roots
+	rootList := make([]string, len(allowedRoots))
+	for i, root := range allowedRoots {
+		rootList[i] = filepath.Clean(root)
+	}
+	return "", fmt.Errorf("access denied: %s is outside the allowed directories: %s", resolved, strings.Join(rootList, ", "))
+}
+
 // ReadFileContent reads a file with line numbers.
-func ReadFileContent(path string, offset, limit int) (string, error) {
-	file, err := os.Open(path)
+// The allowedRoots parameter specifies which directories are allowed for file access.
+// If empty, no path validation is performed (backward compatibility).
+func ReadFileContent(path string, offset, limit int, allowedRoots []string) (string, error) {
+	// Validate path is within allowed roots
+	validatedPath, err := validatePath(path, allowedRoots)
+	if err != nil {
+		return "", err
+	}
+
+	file, err := os.Open(validatedPath)
 	if err != nil {
 		return "", err
 	}
@@ -53,8 +110,16 @@ func ReadFileContent(path string, offset, limit int) (string, error) {
 }
 
 // WriteFileContent writes content to a file.
-func WriteFileContent(path string, content string) error {
-	dir := filepath.Dir(path)
+// The allowedRoots parameter specifies which directories are allowed for file access.
+// If empty, no path validation is performed (backward compatibility).
+func WriteFileContent(path string, content string, allowedRoots []string) error {
+	// Validate path is within allowed roots
+	validatedPath, err := validatePath(path, allowedRoots)
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(validatedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
@@ -62,19 +127,27 @@ func WriteFileContent(path string, content string) error {
 }
 
 // EditFileContent performs an exact string replacement in a file.
-func EditFileContent(path string, oldString, newString string, replaceAll bool) error {
+// The allowedRoots parameter specifies which directories are allowed for file access.
+// If empty, no path validation is performed (backward compatibility).
+func EditFileContent(path string, oldString, newString string, replaceAll bool, allowedRoots []string) error {
 	if oldString == newString {
 		return fmt.Errorf("old_string and new_string must be different")
 	}
 
-	content, err := os.ReadFile(path)
+	// Validate path is within allowed roots
+	validatedPath, err := validatePath(path, allowedRoots)
+	if err != nil {
+		return err
+	}
+
+	content, err := os.ReadFile(validatedPath)
 	if err != nil {
 		return err
 	}
 
 	contentStr := string(content)
 	if !strings.Contains(contentStr, oldString) {
-		return fmt.Errorf("old_string not found in %s", path)
+		return fmt.Errorf("old_string not found in %s", validatedPath)
 	}
 
 	count := strings.Count(contentStr, oldString)
@@ -87,7 +160,7 @@ func EditFileContent(path string, oldString, newString string, replaceAll bool) 
 		// Only error for very short/ambiguous strings (less than 4 chars)
 		// This allows "old text" (9 chars) to work but "line" (4 chars) to error
 		if len(strings.TrimSpace(oldString)) < 5 {
-			return fmt.Errorf("old_string appears %d times in %s. Provide more context or set replace_all=true", count, path)
+			return fmt.Errorf("old_string appears %d times in %s. Provide more context or set replace_all=true", count, validatedPath)
 		}
 	}
 
@@ -99,7 +172,7 @@ func EditFileContent(path string, oldString, newString string, replaceAll bool) 
 		newContent = strings.Replace(contentStr, oldString, newString, 1)
 	}
 
-	return os.WriteFile(path, []byte(newContent), 0644)
+	return os.WriteFile(validatedPath, []byte(newContent), 0644)
 }
 
 // getSrtSettingsArgs returns the srt CLI args for --settings if a settings file

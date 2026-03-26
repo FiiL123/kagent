@@ -99,8 +99,14 @@ func (t *readFileTool) Run(toolCtx tool.Context, args any) (map[string]any, erro
 		}
 	}
 
-	// Create FileTools and read
-	ft := &skills.FileTools{}
+	// Get session path for validation
+	sessionPath, err := skills.GetSessionPath(toolCtx.SessionID(), t.skillsDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session path: %w", err)
+	}
+
+	// Create FileTools with session path and read
+	ft := skills.NewFileTools(sessionPath, t.skillsDirectory)
 	content, err := ft.ReadFile(path, offset, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read file: %w", err)
@@ -141,11 +147,13 @@ func (t *readFileTool) ProcessRequest(_ tool.Context, req *model.LLMRequest) err
 }
 
 // writeFileTool writes content to a file.
-type writeFileTool struct{}
+type writeFileTool struct {
+	skillsDirectory string
+}
 
 // NewWriteFileTool creates a new write file tool.
-func NewWriteFileTool() tool.Tool {
-	return &writeFileTool{}
+func NewWriteFileTool(skillsDir string) tool.Tool {
+	return &writeFileTool{skillsDirectory: skillsDir}
 }
 
 func (t *writeFileTool) Name() string {
@@ -181,7 +189,7 @@ func (t *writeFileTool) Declaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (t *writeFileTool) Run(_ tool.Context, args any) (map[string]any, error) {
+func (t *writeFileTool) Run(toolCtx tool.Context, args any) (map[string]any, error) {
 	m, ok := args.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("unexpected args type, got: %T", args)
@@ -207,8 +215,14 @@ func (t *writeFileTool) Run(_ tool.Context, args any) (map[string]any, error) {
 		return nil, fmt.Errorf("content must be a string, got: %T", contentRaw)
 	}
 
-	// Create FileTools and write
-	ft := &skills.FileTools{}
+	// Get session path for validation
+	sessionPath, err := skills.GetSessionPath(toolCtx.SessionID(), t.skillsDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session path: %w", err)
+	}
+
+	// Create FileTools with session path and write
+	ft := skills.NewFileTools(sessionPath, t.skillsDirectory)
 	if err := ft.WriteFile(path, content); err != nil {
 		return nil, fmt.Errorf("failed to write file: %w", err)
 	}
@@ -248,11 +262,13 @@ func (t *writeFileTool) ProcessRequest(_ tool.Context, req *model.LLMRequest) er
 }
 
 // editFileTool performs an exact string replacement in a file.
-type editFileTool struct{}
+type editFileTool struct {
+	skillsDirectory string
+}
 
 // NewEditFileTool creates a new edit file tool.
-func NewEditFileTool() tool.Tool {
-	return &editFileTool{}
+func NewEditFileTool(skillsDir string) tool.Tool {
+	return &editFileTool{skillsDirectory: skillsDir}
 }
 
 func (t *editFileTool) Name() string {
@@ -296,7 +312,7 @@ func (t *editFileTool) Declaration() *genai.FunctionDeclaration {
 	}
 }
 
-func (t *editFileTool) Run(_ tool.Context, args any) (map[string]any, error) {
+func (t *editFileTool) Run(toolCtx tool.Context, args any) (map[string]any, error) {
 	m, ok := args.(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("unexpected args type, got: %T", args)
@@ -341,8 +357,14 @@ func (t *editFileTool) Run(_ tool.Context, args any) (map[string]any, error) {
 		}
 	}
 
-	// Create FileTools and edit
-	ft := &skills.FileTools{}
+	// Get session path for validation
+	sessionPath, err := skills.GetSessionPath(toolCtx.SessionID(), t.skillsDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get session path: %w", err)
+	}
+
+	// Create FileTools with session path and edit
+	ft := skills.NewFileTools(sessionPath, t.skillsDirectory)
 	if err := ft.EditFile(path, oldString, newString, replaceAll); err != nil {
 		return nil, fmt.Errorf("failed to edit file: %w", err)
 	}
